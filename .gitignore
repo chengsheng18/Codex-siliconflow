@@ -1,0 +1,29 @@
+# Node modules
+node_modules/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+*.key
+*.pem
+
+# Codex config (user-specific)
+config.toml
+
+# WorkBuddy
+.workbuddy/
+
+# Build artifacts
+dist/
+build/

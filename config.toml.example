@@ -1,0 +1,6 @@
+[model_providers.siliconflow]
+name = "siliconflow"
+base_url = "http://127.0.0.1:8787/v1"
+api_key = "codex-sf-proxy"
+model = "Qwen/Qwen2.5-7B-Instruct"
+wire_api = "responses"

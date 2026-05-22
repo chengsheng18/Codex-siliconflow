@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nim-Proxy 管理面板 v3.6</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f5f7fa;--card-bg:#fff;--border:#e8ecf1;--text:#1a1a2e;--text-secondary:#6b7280;
+  --primary:#1890ff;--primary-light:#e6f4ff;--success:#52c41a;--success-bg:#f6ffed;
+  --warning:#faad14;--warning-bg:#fffbe6;--error:#ff4d4f;--error-bg:#fff2f0;
+  --radius:8px;--shadow:0 1px 3px rgba(0,0,0,.08);--shadow-hover:0 4px 12px rgba(0,0,0,.1)
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;min-height:100vh}
+
+/* Header */
+.header{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.header-left{display:flex;align-items:center;gap:12px}
+.header h1{font-size:20px;font-weight:600}
+.badge{background:rgba(255,255,255,.2);padding:2px 10px;border-radius:12px;font-size:12px;font-weight:500}
+.header-right{display:flex;align-items:center;gap:16px}
+.status-dot{width:10px;height:10px;border-radius:50%;background:var(--success);display:inline-block;animation:pulse 2s infinite;box-shadow:0 0 8px var(--success)}
+.status-dot.disconnected{background:var(--error);box-shadow:0 0 8px var(--error);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.stat-chips{display:flex;gap:8px}
+.stat-chip{background:rgba(255,255,255,.15);padding:4px 12px;border-radius:14px;font-size:12px}
+.stat-chip b{font-weight:600}
+
+/* Main */
+.main{display:grid;grid-template-columns:420px 1fr;gap:20px;padding:20px 24px;max-width:1600px;margin:0 auto}
+@media(max-width:1024px){.main{grid-template-columns:1fr}}
+
+/* Card */
+.card{background:var(--card-bg);border-radius:var(--radius);box-shadow:var(--shadow);border:1px solid var(--border);overflow:hidden}
+.card-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;font-weight:600;font-size:14px;background:#fafbfc}
+.card-body{padding:14px 18px}
+
+/* Models Panel */
+.models-panel{height:calc(100vh - 140px);display:flex;flex-direction:column}
+.models-list{flex:1;overflow-y:auto;padding:10px 14px}
+.model-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px;transition:all .2s}
+.model-card:hover{box-shadow:var(--shadow-hover);border-color:var(--primary)}
+.model-card.disabled{opacity:.5}
+.model-name-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.model-name{font-weight:600;font-size:13px}
+.model-priority{font-size:11px;background:var(--primary-light);color:var(--primary);padding:1px 8px;border-radius:10px;font-weight:500}
+.model-id{font-size:11.5px;color:var(--text-secondary);margin-bottom:8px;font-family:'SF Mono',Monaco,Consolas,monospace;word-break:break-all}
+.model-desc{font-size:12px;color:var(--text-secondary);margin-bottom:10px}
+.model-stats{display:flex;gap:12px;margin-bottom:10px}
+.model-stat{font-size:11.5px;display:flex;align-items:center;gap:4px}
+.model-stat .ok{color:var(--success)}
+.model-stat .err{color:var(--error)}
+.model-actions{display:flex;gap:6px;flex-wrap:wrap}
+.btn{border:none;border-radius:5px;padding:5px 12px;font-size:11.5px;cursor:pointer;transition:all .2s;font-weight:500;display:inline-flex;align-items:center;gap:4px}
+.btn:hover{transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{background:#40a9ff}
+.btn-success{background:var(--success);color:#fff}
+.btn-danger{background:var(--error);color:#fff}
+.btn-warning{background:var(--warning);color:#fff}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text-secondary)}.btn-outline:hover{border-color:var(--primary);color:var(--primary)}
+.btn-sm{padding:3px 8px;font-size:11px}
+
+/* Health indicator */
+.health-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+.health-ok{background:var(--success);box-shadow:0 0 4px var(--success)}
+.health-cooling{background:var(--warning);box-shadow:0 0 4px var(--warning)}
+.health-error{background:var(--error);box-shadow:0 0 4px var(--error)}
+
+/* Add Model Button */
+.add-model-btn{width:100%;padding:12px;border:2px dashed var(--border);border-radius:6px;background:transparent;color:var(--text-secondary);cursor:pointer;font-size:13px;font-weight:500;transition:all .2s;margin-top:4px}
+.add-model-btn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-light)}
+
+/* Right column */
+.right-col{display:flex;flex-direction:column;gap:20px}
+
+/* Log Terminal */
+.log-panel{height:calc(50vh - 80px);display:flex;flex-direction:column}
+.log-terminal{flex:1;overflow-y:auto;background:#1e1e2e;border-radius:0 0 var(--radius) var(--radius);padding:12px 16px;font-family:'SF Mono',Monaco,Consolas,'Courier New',monospace;font-size:12px;line-height:1.65;color:#cdd6f4;scroll-behavior:smooth}
+.log-entry{white-space:pre-wrap;word-break:break-all;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.log-ts{color:#585b70;font-size:11px;margin-right:8px;user-select:none}
+.log-info .log-msg{color:#89b4fa}
+.log-warn .log-msg{color:#f9e2af}
+.log-error .log-msg{color:#f38ba8}
+.log-toolbar{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#181825;border-radius:var(--radius) var(--radius) 0 0;border-bottom:1px solid #313244}
+.log-filters{display:flex;gap:6px}
+.filter-btn{padding:3px 10px;border-radius:12px;border:1px solid #313244;background:transparent;color:#a6adc8;font-size:11px;cursor:pointer;transition:all .15s}
+.filter-btn.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+/* History Table */
+.history-panel{height:calc(50vh - 140px);display:flex;flex-direction:column}
+.history-table-wrap{flex:1;overflow-y:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{position:sticky;top:0;background:#fafbfc;padding:10px 14px;text-align:left;font-weight:600;color:var(--text-secondary);border-bottom:2px solid var(--border);white-space:nowrap}
+tbody tr{border-bottom:1px solid var(--border);transition:background .15s}
+tbody tr:hover{background:var(--primary-light)}
+td{padding:9px 14px;white-space:nowrap;vertical-align:middle}
+.status-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:500}
+.status-success{background:var(--success-bg);color:var(--success)}
+.status-fail{background:var(--error-bg);color:var(--error)}
+.model-tag{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11.5px;background:var(--bg);padding:2px 8px;border-radius:4px;color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis;display:inline-block}
+
+/* Modal */
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px);opacity:0;pointer-events:none;transition:opacity .2s}
+.modal-overlay.show{opacity:1;pointer-events:auto}
+.modal{background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.2);width:480px;max-width:90vw;transform:scale(.95);transition:transform .2s}
+.modal-overlay.show .modal{transform:scale(1)}
+.modal-header{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.modal-header h3{font-size:16px;font-weight:600}
+.modal-close{background:none;border:none;font-size:22px;cursor:pointer;color:var(--text-secondary);line-height:1}
+.modal-close:hover{color:var(--text)}
+.modal-body{padding:22px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:13px;font-weight:500;margin-bottom:6px;color:var(--text)}
+.form-group label .req{color:var(--error);margin-left:2px}
+.form-input{width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:6px;font-size:13.5px;transition:border-color .2s;outline:none;font-family:inherit}
+.form-input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
+.form-hint{font-size:11.5px;color:var(--text-secondary);margin-top:4px}
+.modal-footer{padding:16px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px}
+.btn-lg{padding:9px 20px;font-size:13.5px}
+
+/* Empty states */
+.empty-state{text-align:center;padding:40px 20px;color:var(--text-secondary)}
+.empty-state .icon{font-size:40px;margin-bottom:12px;opacity:.5}
+
+/* Toast notification */
+.toast-container{position:fixed;top:70px;right:24px;z-index:2000;display:flex;flex-direction:column;gap:8px}
+.toast{background:#fff;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.12);padding:12px 18px;font-size:13px;display:flex;align-items:center;gap:8px;min-width:250px;animation:slideIn .3s ease;border-left:4px solid var(--primary)}
+.toast.success{border-left-color:var(--success)}.toast.error{border-left-color:var(--error)}.toast.warn{border-left-color:var(--warning)}
+@keyframes slideIn{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:translateX(0)}}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#c1c8d4;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#a0a8b8}
+
+/* Connection banner */
+.conn-banner{background:var(--warning-bg);color:#b8860b;text-align:center;padding:6px;font-size:12.5px;display:none}
+.conn-banner.show{display:block}
+
+/* Model active state & direct-switch button */
+.model-card.is-active{border-color:var(--success);box-shadow:0 0 0 2px rgba(82,196,26,.25);background:var(--success-bg)}
+.model-card.is-active .model-name{color:var(--success)}
+.btn-use{background:var(--primary);color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:4px}
+.btn-use:hover{background:#40a9ff;transform:translateY(-1px);box-shadow:0 4px 12px rgba(24,144,255,.3)}
+.btn-use:disabled{background:#ccc;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-active{background:var(--success);color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:12px;font-weight:600;cursor:default;display:inline-flex;align-items:center;gap:4px}
+.btn-auto-back{background:#fff;color:var(--text-secondary);border:1.5px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;transition:all .2s}
+.btn-auto-back:hover{border-color:var(--warning);color:var(--warning)}
+</style>
+</head>
+<body>
+
+<!-- ===== Header ===== -->
+<div class="header">
+  <div class="header-left">
+    <h1>⚡ Nim-Proxy 管理面板</h1>
+    <span class="badge">v3.6</span>
+  </div>
+  <div class="header-right">
+    <div class="stat-chips">
+      <span class="stat-chip">请求 <b id="stat-requests">-</b></span>
+      <span class="stat-chip">成功率 <b id="stat-rate">-</b></span>
+      <span class="stat-chip">模型 <b id="stat-models">-</b>/<b id="stat-models-total">-</b></span>
+      <span class="stat-chip" title="运行时间">⏱ <b id="stat-uptime">-</b></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span class="status-dot" id="conn-status"></span>
+      <span id="conn-label" style="font-size:12.5px">连接中...</span>
+    </div>
+  </div>
+</div>
+
+<div class="conn-banner" id="conn-banner">
+  ⚠️ 与代理服务器连接中断，部分数据可能不是最新的 — 正在尝试重连...
+</div>
+
+<!-- ===== Main Content ===== -->
+<div class="main">
+
+  <!-- Left: Models -->
+  <div class="card models-panel">
+    <div class="card-header">
+      <span>📦 模型池管理</span>
+      <button class="btn btn-primary btn-sm" onclick="openAddModel()">+ 新增模型</button>
+    </div>
+
+    <div class="models-list" id="models-list">
+      <div class="empty-state"><div class="icon">📭</div><p>加载中...</p></div>
+    </div>
+  </div>
+
+  <!-- Right Column -->
+  <div class="right-col">
+
+    <!-- Log Terminal -->
+    <div class="card log-panel">
+      <div class="card-header log-toolbar">
+        <span>📡 实时日志</span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="log-filters">
+            <button class="filter-btn active" data-level="ALL" onclick="setLogFilter('ALL',this)">全部</button>
+            <button class="filter-btn" data-level="INFO" onclick="setLogFilter('INFO',this)">INFO</button>
+            <button class="filter-btn" data-level="WARN" onclick="setLogFilter('WARN',this)">WARN</button>
+            <button class="filter-btn" data-level="ERROR" onclick="setLogFilter('ERROR',this)">ERROR</button>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="clearLogs()">清空</button>
+          <button class="btn btn-outline btn-sm" onclick="scrollToBottom()">↓ 底部</button>
+        </div>
+      </div>
+      <div class="log-terminal" id="log-terminal"></div>
+    </div>
+
+    <!-- Request History -->
+    <div class="card history-panel">
+      <div class="card-header">
+        <span>📋 最近请求</span>
+        <button class="btn btn-outline btn-sm" onclick="clearHistory()">清空记录</button>
+      </div>
+      <div class="history-table-wrap">
+        <table>
+          <thead>
+            <tr><th>时间</th><th>模型</th><th>类型</th><th>状态</th><th>Tokens/字符</th><th>详情</th></tr>
+          </thead>
+          <tbody id="history-tbody">
+            <tr><td colspan="6"><div class="empty-state"><p>暂无请求记录</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ===== Add Model Modal ===== -->
+<div class="modal-overlay" id="add-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>新增模型</h3>
+      <button class="modal-close" onclick="closeModal('add-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>模型 ID <span class="req">*</span></label>
+        <input class="form-input" id="new-id" placeholder="例如: deepseek-ai/DeepSeek-V3.2">
+        <div class="form-hint">SiliconFlow 的模型标识符，格式为 "组织/模型名"</div>
+      </div>
+      <div class="form-group">
+        <label>显示名称 <span class="req">*</span></label>
+        <input class="form-input" id="new-name" placeholder="例如: DeepSeek V3.2">
+      </div>
+      <div class="form-group">
+        <label>描述</label>
+        <input class="form-input" id="new-desc" placeholder="简短描述此模型的特点（可选）">
+      </div>
+      <div class="form-group">
+        <label>优先级</label>
+        <input class="form-input" id="new-priority" type="number" value="99" min="1" max="999">
+        <div class="form-hint">数字越小优先级越高，默认追加到末尾</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline btn-lg" onclick="closeModal('add-modal')">取消</button>
+      <button class="btn btn-primary btn-lg" onclick="submitAddModel()">添加模型</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Toast Container ===== -->
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+// ==================== Global State ====================
+const API = '';
+let currentLogFilter = 'ALL';
+let eventSource = null;
+let autoScroll = true;
+
+// v3.6: 活跃模型状态
+let activeModelInfo = null;   // 服务器端活跃模型 {id, name, mode}
+let switchingId = null;       // 正在切换中的模型 ID（防止重复点击）
+
+// ==================== Init ====================
+document.addEventListener('DOMContentLoaded', () => {
+  connectLogStream();
+  fetchModels();
+  fetchStats();
+  fetchHistory();
+  fetchActiveModel();   // v3.6: 获取当前活跃模型
+  setInterval(fetchStats, 5000);
+  setInterval(fetchModels, 10000);
+  setInterval(fetchHistory, 8000);
+  setInterval(fetchActiveModel, 10000);  // v3.6: 同步活跃模型状态
+
+  const logEl = document.getElementById('log-terminal');
+  logEl.addEventListener('scroll', () => {
+    autoScroll = (logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight) < 50;
+  });
+});
+
+// ==================== SSE Log Stream ====================
+function connectLogStream() {
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource(API + '/api/logs');
+
+  eventSource.onopen = () => { setConnStatus(true); };
+  eventSource.onmessage = (e) => {
+    try { appendLogEntry(JSON.parse(e.data)); } catch(err) {}
+  };
+  eventSource.onerror = () => {
+    setConnStatus(false);
+    setTimeout(() => { connectLogStream(); }, 3000);
+  };
+}
+
+function setConnStatus(ok) {
+  const dot = document.getElementById('conn-status');
+  const label = document.getElementById('conn-label');
+  const banner = document.getElementById('conn-banner');
+  if (ok) {
+    dot.classList.remove('disconnected'); label.textContent = '已连接';
+    banner.classList.remove('show');
+  } else {
+    dot.classList.add('disconnected'); label.textContent = '已断开';
+    banner.classList.add('show');
+  }
+}
+
+// ==================== Log Rendering ====================
+function appendLogEntry(entry) {
+  const term = document.getElementById('log-terminal');
+  const div = document.createElement('div');
+  div.className = 'log-entry log-' + entry.level.toLowerCase();
+  div.innerHTML = '<span class="log-ts">' + formatTs(entry.ts) + '</span><span class="log-msg">' + escHtml(entry.message) + '</span>';
+  term.appendChild(div);
+  if (autoScroll) term.scrollTop = term.scrollHeight;
+}
+
+function formatTs(iso) {
+  try { return iso.slice(11, 23); } catch(e) { return iso; }
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function setLogFilter(level, btn) {
+  currentLogFilter = level;
+  document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  document.querySelectorAll('#log-terminal .log-entry').forEach(function(el) {
+    el.style.display = (currentLogFilter === 'ALL' || el.classList.contains('log-' + currentLogFilter.toLowerCase())) ? '' : 'none';
+  });
+}
+
+function clearLogs() {
+  document.getElementById('log-terminal').innerHTML = '';
+  toast('日志显示区已清空', 'info');
+}
+
+function scrollToBottom() {
+  const el = document.getElementById('log-terminal');
+  el.scrollTop = el.scrollHeight;
+}
+
+// ==================== Models API ====================
+async function fetchModels() {
+  try {
+    const res = await fetch(API + '/api/models');
+    const data = await res.json();
+    renderModels(data.models || []);
+  } catch(e) { console.error('fetchModels:', e); }
+}
+
+function renderModels(models) {
+  const list = document.getElementById('models-list');
+  if (!models.length) {
+    list.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>暂无模型</p><p style="margin-top:6px;font-size:12px">点击下方按钮添加</p></div>';
+    return;
+  }
+
+  let html = '';
+  for (const m of models) {
+    const h = m.health;
+    const hc = h.status === 'ok' ? 'health-ok' : h.status === 'cooling' ? 'health-cooling' : 'health-error';
+    const hl = h.status === 'ok' ? '正常' : h.status === 'cooling' ? ('冷却 ' + Math.ceil(h.cooldownRemaining / 1000) + 's') : '异常';
+    const dc = m.enabled ? '' : 'disabled';
+
+    // v3.6: 活跃状态 & 切换按钮
+    const isActive = m.isActive;
+    const actCls = isActive ? 'is-active' : '';
+    const cardCls = (dc || actCls).trim();
+    const isSwitching = switchingId === m.id;
+
+    // 每个模型卡片直接带切换按钮
+    let switchBtnHtml = '';
+    if (isActive) {
+      switchBtnHtml = '<button class="btn-active">✓ 当前使用</button> <button class="btn-auto-back" onclick="setAutoMode()">↺ 切回自动</button>';
+    } else if (isSwitching) {
+      switchBtnHtml = '<button class="btn-use" disabled>切换中...</button>';
+    } else {
+      switchBtnHtml = '<button class="btn-use" onclick="switchToModel(\'' + encodeURIComponent(m.id) + '\',\'' + escHtml(m.name).replace(/'/g, "\\'") + '\')">使用此模型</button>';
+    }
+
+    html += '<div class="model-card ' + cardCls + '" data-id="' + escHtml(m.id) + '">' +
+      '<div class="model-name-row">' +
+        '<span class="model-name"><span class="health-dot ' + hc + '" title="' + hl + '"></span>' + ' ' + escHtml(m.name) + '</span>' +
+        '<span class="model-priority">P' + m.priority + '</span>' +
+      '</div>' +
+      '<div class="model-id">' + escHtml(m.id) + '</div>' +
+      '<div class="model-desc">' + escHtml(m.desc || '-') + '</div>' +
+      '<div class="model-stats">' +
+        '<span class="model-stat ok">✓ ' + h.totalSuccesses + ' 成功</span>' +
+        '<span class="model-stat err">✗ ' + h.totalFailures + ' 失败</span>' +
+      '</div>' +
+      '<div class="model-actions">' +
+        switchBtnHtml +
+        '<button class="btn ' + (m.enabled ? 'btn-warning btn-sm' : 'btn-success btn-sm') + '" onclick="toggleModel(\'' + encodeURIComponent(m.id) + '\')">' + (m.enabled ? '禁用' : '启用') + '</button>' +
+        '<button class="btn btn-outline btn-sm" onclick="priorityModel(\'' + encodeURIComponent(m.id) + '\')">优先级</button>' +
+        '<button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + encodeURIComponent(m.id) + '\',\'' + escHtml(m.name).replace(/'/g, "\\'") + '\')">删除</button>' +
+      '</div>' +
+    '</div>';
+  }
+  list.innerHTML = html + '<button class="add-model-btn" onclick="openAddModel()">+ 添加新模型</button>';
+}
+
+// ==================== Model CRUD ====================
+
+// ---- v3.6: 活跃模型直接切换机制（每卡片独立按钮） ----
+
+/** 获取当前活跃模型 */
+async function fetchActiveModel() {
+  try {
+    const res = await fetch(API + '/api/active-model');
+    activeModelInfo = await res.json();
+  } catch(e) { console.error('fetchActiveModel:', e); }
+}
+
+/** 直接切换到指定模型 — 点击「使用此模型」按钮时调用 */
+async function switchToModel(modelId, modelName) {
+  const realId = decodeURIComponent(modelId);
+  if (switchingId === modelId) return;  // 防重复点击
+  switchingId = modelId;
+  fetchModels();  // 刷新 UI 显示"切换中..."
+
+  try {
+    const res = await fetch(API + '/api/active-model', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: realId})
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      toast((data.message || '✅ 已切换到') + ' ' + modelName, 'success');
+      activeModelInfo = data;
+    } else {
+      toast(data.error || '切换失败', 'error');
+    }
+  } catch(e) {
+    toast('网络错误: ' + e.message, 'error');
+  } finally {
+    switchingId = null;
+    fetchModels();   // 刷新最终状态
+    fetchStats();
+  }
+}
+
+/** 切回自动模式 */
+async function setAutoMode() {
+  try {
+    const res = await fetch(API + '/api/active-model', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: null})
+    });
+    const data = await res.json();
+    if (res.ok) {
+      toast(data.message || '↺ 已切回自动模式', 'success');
+      activeModelInfo = data;
+      fetchModels();
+      fetchStats();
+    } else {
+      toast(data.error || '操作失败', 'error');
+    }
+  } catch(e) { toast('网络错误', 'error'); }
+}
+function openAddModel() {
+  document.getElementById('add-modal').classList.add('show');
+  document.getElementById('new-id').value = '';
+  document.getElementById('new-name').value = '';
+  document.getElementById('new-desc').value = '';
+  document.getElementById('new-priority').value = '99';
+  document.getElementById('new-id').focus();
+}
+
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+async function submitAddModel() {
+  const id = document.getElementById('new-id').value.trim();
+  const name = document.getElementById('new-name').value.trim();
+  const desc = document.getElementById('new-desc').value.trim();
+  const priority = parseInt(document.getElementById('new-priority').value) || 99;
+
+  if (!id || !name) { toast('请填写模型 ID 和名称', 'warn'); return; }
+
+  try {
+    const res = await fetch(API + '/api/models', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id:id, name:name, desc:desc, priority:priority})
+    });
+    const data = await res.json();
+    if (res.status === 201) {
+      toast('模型 "' + name + '" 已添加', 'success');
+      closeModal('add-modal');
+      fetchModels(); fetchStats();
+    } else {
+      toast(data.error || '添加失败', 'error');
+    }
+  } catch(e) { toast('网络错误: ' + e.message, 'error'); }
+}
+
+async function toggleModel(encId) {
+  const modelId = decodeURIComponent(encId);
+  try {
+    const res = await fetch(API + '/api/models/' + encId + '/toggle', {method:'PUT'});
+    const data = await res.json();
+    if (res.ok) {
+      toast(modelId + (data.enabled ? ' → 已启用' : ' → 已禁用'), 'success');
+      fetchModels(); fetchStats();
+    } else { toast(data.error || '操作失败', 'error'); }
+  } catch(e) { toast('网络错误', 'error'); }
+}
+
+async function deleteModel(encId, modelName) {
+  const modelId = decodeURIComponent(encId);
+  if (!confirm('确定删除模型 "' + modelName + '"?\n\nID: ' + modelId + '\n\n此操作不可撤销。')) return;
+  try {
+    const res = await fetch(API + '/api/models/' + encId, {method:'DELETE'});
+    const data = await res.json();
+    if (res.ok) {
+      toast('模型 "' + modelName + '" 已删除', 'success');
+      fetchModels(); fetchStats();
+    } else { toast(data.error || '删除失败', 'error'); }
+  } catch(e) { toast('网络错误', 'error'); }
+}
+
+async function priorityModel(encId) {
+  const val = prompt('输入新的优先级数字（越小越优先）:');
+  if (val === null) return;
+  const p = parseInt(val);
+  if (isNaN(p) || p < 1) { toast('请输入有效正整数', 'warn'); return; }
+  try {
+    const res = await fetch(API + '/api/models/' + encId + '/priority', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({priority:p})
+    });
+    if (res.ok) { toast('优先级已更新', 'success'); fetchModels(); }
+    else { const d = await res.json(); toast(d.error || '更新失败', 'error'); }
+  } catch(e) { toast('网络错误', 'error'); }
+}
+
+// ==================== Stats ====================
+async function fetchStats() {
+  try {
+    const res = await fetch(API + '/api/stats');
+    const s = await res.json();
+    document.getElementById('stat-requests').textContent = s.requests?.total || 0;
+    document.getElementById('stat-rate').textContent = (s.requests?.successRate || 0) + '%';
+    document.getElementById('stat-models').textContent = s.proxy?.modelsEnabled || 0;
+    document.getElementById('stat-models-total').textContent = s.models?.total || 0;
+    document.getElementById('stat-uptime').textContent = fmtUptime(s.uptime || 0);
+  } catch(e) {}
+}
+
+function fmtUptime(sec) {
+  if (sec < 60) return Math.floor(sec) + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm';
+  if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+  return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';
+}
+
+// ==================== History ====================
+async function fetchHistory() {
+  try {
+    const res = await fetch(API + '/api/history?limit=20');
+    const data = await res.json();
+    renderHistory(data.records || []);
+  } catch(e) {}
+}
+
+function renderHistory(records) {
+  const tbody = document.getElementById('history-tbody');
+  if (!records.length) {
+    tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>暂无请求记录</p></div></td></tr>';
+    return;
+  }
+
+  let html = '';
+  for (let i = records.length - 1; i >= Math.max(0, records.length - 20); i--) {
+    const r = records[i];
+    const ok = r.status === 'success';
+    const sz = r.tokens ? (r.tokens + ' tokens') : (r.chars ? (r.chars + ' chars') : '-');
+    html += '<tr>' +
+      '<td>' + (r.ts ? formatTs(r.ts) : '-') + '</td>' +
+      '<td><span class="model-tag" title="' + escHtml(r.model || '') + '">' + escHtml((r.model || '-').length > 30 ? (r.model || '').slice(0,27) + '...' : (r.model || '-')) + '</span></td>' +
+      '<td>' + (r.stream ? '流式' : '非流式') + '</td>' +
+      '<td><span class="status-badge ' + (ok ? 'status-success' : 'status-fail') + '">' + (ok ? '✓ 成功' : '✗ 失败') + '</span></td>' +
+      '<td>' + sz + '</td>' +
+      '<td style="color:var(--text-secondary);max-width:180px;overflow:hidden;text-overflow:ellipsis">' + (r.error ? escHtml(r.error.slice(0, 40)) : '') + '</td>' +
+    '</tr>';
+  }
+  tbody.innerHTML = html;
+}
+
+async function clearHistory() {
+  if (!confirm('确定清空所有请求历史？')) return;
+  try {
+    await fetch(API + '/api/history', {method:'DELETE'});
+    toast('请求历史已清空', 'success');
+    fetchHistory(); fetchStats();
+  } catch(e) {}
+}
+
+// ==================== Toast ====================
+function toast(msg, type) {
+  type = type || 'info';
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.innerHTML = '<span>' + (type==='success'? '✅': type==='error'? '❌': type==='warn'? '⚠️': 'ℹ️') + ' ' + msg + '</span>';
+  c.appendChild(t);
+  setTimeout(function() {
+    t.style.opacity = '0';
+    t.style.transform = 'translateX(40px)';
+    t.style.transition = 'all .3s ease';
+    setTimeout(function() { if(t.parentNode) t.parentNode.removeChild(t); }, 320);
+  }, 3500);
+}
+
+// ESC to close modal
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeModal('add-modal');
+});
+</script>
+</body>
+</html>
