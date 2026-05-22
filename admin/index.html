@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nim-Proxy 管理面板 v3.6</title>
+<title>Nim-Proxy 管理面板 v3.7</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -149,6 +149,35 @@ td{padding:9px 14px;white-space:nowrap;vertical-align:middle}
 .btn-active{background:var(--success);color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:12px;font-weight:600;cursor:default;display:inline-flex;align-items:center;gap:4px}
 .btn-auto-back{background:#fff;color:var(--text-secondary);border:1.5px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;transition:all .2s}
 .btn-auto-back:hover{border-color:var(--warning);color:var(--warning)}
+
+/* v3.7: Codex Config Card */
+.codex-config-card{background:linear-gradient(135deg,#f0f5ff 0%,#e6f4ff 100%);border:2px solid #bae0ff;border-radius:10px;padding:18px 20px;margin-bottom:16px;position:relative;overflow:hidden}
+.codex-config-card::before{content:'';position:absolute;top:-30px;right:-30px;width:80px;height:80px;background:rgba(24,144,255,.08);border-radius:50%}
+.codex-config-card.config-ok{background:linear-gradient(135deg,#f6ffed 0%,#eaffea 100%);border-color:#b7eb8f}
+.codex-config-card.config-warn{background:linear-gradient(135deg,#fffbe6 0%,#fff8e6 100%);border-color:#ffe58f}
+.codex-config-card.config-error{background:linear-gradient(135deg,#fff2f0 0%,#ffeae8 100%);border-color:#ffa39e}
+.ccx-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.ccx-title{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:var(--text)}
+.ccx-icon{font-size:22px}
+.ccx-status-badge{padding:3px 12px;border-radius:14px;font-size:11.5px;font-weight:600}
+.ccx-status-ok{background:var(--success-bg);color:var(--success)}
+.ccx-status-warn{background:var(--warning-bg);color:#b8860b}
+.ccx-status-error{background:var(--error-bg);color:var(--error)}
+.ccx-details{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:14px}
+.ccx-detail-item{display:flex;align-items:center;gap:6px;font-size:12px}
+.ccx-detail-label{color:var(--text-secondary);white-space:nowrap;min-width:70px}
+.ccx-detail-value{font-family:'SF Mono',Monaco,Consolas,monospace;font-weight:600;font-size:11.5px;color:var(--text);word-break:break-all}
+.ccx-detail-value.ok{color:var(--success)}.ccx-detail-value.err{color:var(--error)}.ccx-detail-value.warn{color:var(--warning)}
+.ccx-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ccx-btn-primary{background:linear-gradient(135deg,#1890ff,#096dd9);color:#fff;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer;transition:all .25s;display:inline-flex;align-items:center;gap:6px;box-shadow:0 2px 8px rgba(24,144,255,.25)}
+.ccx-btn-primary:hover{transform:translateY(-1.5px);box-shadow:0 4px 16px rgba(24,144,255,.35)}
+.ccx-btn-primary:active{transform:translateY(0)}
+.ccx-btn-primary:disabled{background:#ccc;cursor:not-allowed;transform:none;box-shadow:none}
+.ccx-btn-secondary{background:#fff;color:var(--text-secondary);border:1.5px solid var(--border);border-radius:8px;padding:7px 16px;font-size:12.5px;font-weight:500;cursor:pointer;transition:all .2s}
+.ccx-btn-secondary:hover{border-color:var(--primary);color:var(--primary)}
+.ccx-preview{margin-top:12px;background:rgba(255,255,255,.7);border-radius:6px;padding:12px 14px;border:1px solid rgba(0,0,0,.06)}
+.ccx-preview-label{font-size:11px;color:var(--text-secondary);margin-bottom:6px;font-weight:500}
+.ccx-preview-code{font-family:'SF Mono',Monaco,Consolas,'Courier New',monospace;font-size:11.5px;color:#333;line-height:1.6;white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,.03);padding:10px 12px;border-radius:5px;max-height:150px;overflow-y:auto}
 </style>
 </head>
 <body>
@@ -157,7 +186,7 @@ td{padding:9px 14px;white-space:nowrap;vertical-align:middle}
 <div class="header">
   <div class="header-left">
     <h1>⚡ Nim-Proxy 管理面板</h1>
-    <span class="badge">v3.6</span>
+    <span class="badge">v3.7</span>
   </div>
   <div class="header-right">
     <div class="stat-chips">
@@ -175,6 +204,36 @@ td{padding:9px 14px;white-space:nowrap;vertical-align:middle}
 
 <div class="conn-banner" id="conn-banner">
   ⚠️ 与代理服务器连接中断，部分数据可能不是最新的 — 正在尝试重连...
+</div>
+
+<!-- ===== v3.7: Codex 配置状态横幅 ===== -->
+<div style="max-width:1600px;margin:0 auto;padding:12px 24px 0">
+  <div class="codex-config-card" id="codex-config-card">
+    <div class="ccx-header">
+      <div class="ccx-title">
+        <span class="ccx-icon">🔧</span>
+        <span>Codex CLI 配置</span>
+      </div>
+      <span class="ccx-status-badge" id="ccx-status-badge">检测中...</span>
+    </div>
+
+    <div class="ccx-details" id="ccx-details">
+      <div class="ccx-detail-item"><span class="ccx-detail-label">配置文件</span><span class="ccx-detail-value" id="ccx-file">-</span></div>
+      <div class="ccx-detail-item"><span class="ccx-detail-label">Base URL</span><span class="ccx-detail-value" id="ccx-baseurl">-</span></div>
+      <div class="ccx-detail-item"><span class="ccx-detail-label">Model</span><span class="ccx-detail-value" id="ccx-model">-</span></div>
+      <div class="ccx-detail-item"><span class="ccx-detail-label">Wire API</span><span class="ccx-detail-value" id="ccx-wireapi">-</span></div>
+    </div>
+
+    <div class="ccx-actions">
+      <button class="ccx-btn-primary" id="ccx-apply-btn" onclick="applyCodexConfig()">⚡ 一键配置 / 修复</button>
+      <button class="ccx-btn-secondary" onclick="fetchCodexConfig(true)">🔄 刷新检测</button>
+    </div>
+
+    <div class="ccx-preview" id="ccx-preview-area" style="display:none">
+      <div class="ccx-preview-label">📄 即将写入的 config.toml (provider 部分):</div>
+      <div class="ccx-preview-code" id="ccx-preview-code"></div>
+    </div>
+  </div>
 </div>
 
 <!-- ===== Main Content ===== -->
@@ -289,10 +348,12 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchStats();
   fetchHistory();
   fetchActiveModel();   // v3.6: 获取当前活跃模型
+  fetchCodexConfig();    // v3.7: 检测 Codex CLI 配置状态
   setInterval(fetchStats, 5000);
   setInterval(fetchModels, 10000);
   setInterval(fetchHistory, 8000);
   setInterval(fetchActiveModel, 10000);  // v3.6: 同步活跃模型状态
+  setInterval(fetchCodexConfig, 15000); // v3.7: 定期刷新配置检测
 
   const logEl = document.getElementById('log-terminal');
   logEl.addEventListener('scroll', () => {
@@ -642,6 +703,129 @@ function toast(msg, type) {
     t.style.transition = 'all .3s ease';
     setTimeout(function() { if(t.parentNode) t.parentNode.removeChild(t); }, 320);
   }, 3500);
+}
+
+// ==================== v3.7: Codex Config Management ====================
+
+let codexConfigData = null;   // 缓存最新的配置检测数据
+
+/** 获取并渲染 Codex 配置状态 */
+async function fetchCodexConfig(silent) {
+  try {
+    const res = await fetch(API + '/api/codex-config');
+    codexConfigData = await res.json();
+    renderCodexConfig(codexConfigData);
+  } catch(e) {
+    if (!silent) toast('获取 Codex 配置失败: ' + e.message, 'error');
+  }
+}
+
+/** 渲染 Codex 配置状态卡片 */
+function renderCodexConfig(data) {
+  const card = document.getElementById('codex-config-card');
+  const badge = document.getElementById('ccx-status-badge');
+  const fileEl = document.getElementById('ccx-file');
+  const baseEl = document.getElementById('ccx-baseurl');
+  const modelEl = document.getElementById('ccx-model');
+  const wireEl = document.getElementById('ccx-wireapi');
+
+  // 移除所有状态 class
+  card.classList.remove('config-ok', 'config-warn', 'config-error');
+  badge.classList.remove('ccx-status-ok', 'ccx-status-warn', 'ccx-status-error');
+
+  if (data.error || !data.exists) {
+    // 文件不存在或读取错误
+    card.classList.add('config-error');
+    badge.className = 'ccx-status-badge ccx-status-error';
+    badge.textContent = data.error ? '❌ 读取错误' : '⚠️ 文件不存在';
+    fileEl.className = 'ccx-detail-value err';
+    fileEl.textContent = data.path || '(未知)';
+    baseEl.className = 'ccx-detail-value err'; baseEl.textContent = '-';
+    modelEl.className = 'ccx-detail-value err'; modelEl.textContent = '-';
+    wireEl.className = 'ccx-detail-value err'; wireEl.textContent = '-';
+    return;
+  }
+
+  const c = data.checks;
+
+  fileEl.textContent = data.path.replace(/.*[\/\\]/, '');
+  fileEl.className = 'ccx-detail-value ok';
+
+  // base_url
+  if (c.correctBaseUrl && c.correctBaseUrl.ok) {
+    baseEl.textContent = c.correctBaseUrl.actual; baseEl.className = 'ccx-detail-value ok';
+  } else {
+    baseEl.textContent = (c.correctBaseUrl?.actual || '-'); baseEl.className = 'ccx-detail-value err';
+  }
+
+  // wire_api
+  if (c.correctWireApi && c.correctWireApi.ok) {
+    wireEl.textContent = c.correctWireApi.actual; wireEl.className = 'ccx-detail-value ok';
+  } else {
+    wireEl.textContent = (c.correctWireApi?.actual || '-'); wireEl.className = 'ccx-detail-value err';
+  }
+
+  // model
+  if (c.hasModel && c.hasModel.ok) {
+    modelEl.textContent = c.hasModel.actual; modelEl.className = 'ccx-detail-value ok';
+  } else {
+    modelEl.textContent = (c.hasModel?.actual || '-'); modelEl.className = 'ccx-detail-value err';
+  }
+
+  // 总体状态
+  if (c.overall) {
+    card.classList.add('config-ok');
+    badge.className = 'ccx-status-badge ccx-status-ok';
+    badge.textContent = '✅ 配置正确';
+  } else {
+    card.classList.add('config-warn');
+    badge.className = 'ccx-status-badge ccx-status-warn';
+    badge.textContent = '⚠️ 需要修复';
+  }
+
+  // 显示预览（推荐配置）
+  if (data.recommendedConfig) {
+    const prov = data.recommendedConfig['model_providers.siliconflow'] || {};
+    let previewLines = ['[model_providers.siliconflow]'];
+    for (const [k, v] of Object.entries(prov)) {
+      previewLines.push(`  ${k} = "${v}"`);
+    }
+    document.getElementById('ccx-preview-code').textContent = previewLines.join('\n');
+  }
+}
+
+/** 一键应用/修复 Codex 配置 */
+async function applyCodexConfig() {
+  const btn = document.getElementById('ccx-apply-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 正在配置...';
+
+  try {
+    const res = await fetch(API + '/api/codex-config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ useActiveModel: true })
+    });
+    const result = await res.json();
+
+    if (result.success) {
+      toast(result.message || '✅ Codex 配置已写入!', 'success');
+      // 显示预览区域
+      if (result.configPreview) {
+        document.getElementById('ccx-preview-area').style.display = '';
+        document.getElementById('ccx-preview-code').textContent = result.configPreview;
+      }
+      // 刷新状态
+      setTimeout(() => fetchCodexConfig(false), 500);
+    } else {
+      toast(result.message || result.error || '❌ 配置失败', 'error');
+    }
+  } catch(e) {
+    toast('网络错误: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ 一键配置 / 修复';
+  }
 }
 
 // ESC to close modal

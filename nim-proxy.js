@@ -1,9 +1,14 @@
 /**
  * ============================================
- *  Codex <-> SiliconFlow 协议转换代理 v3.6
+ *  Codex <-> SiliconFlow 协议转换代理 v3.7
  *  Responses API <-> Chat Completions
- *  支持多模型池 + 自动故障切换 + Web 管理面板
+ *  支持多模型池 + 自动故障切换 + Web 管理面板 + Codex 配置管理
  * ============================================
+ *
+ * v3.7 变更:
+ *   - 新增 Codex config.toml 一键配置功能（自动检测/写入/校验）
+ *   - 管理面板新增「Codex 配置」卡片，显示配置状态与一键修复按钮
+ *   - 完整 Admin Server（端口 8788）内嵌：模型管理/日志流/统计/历史/Codex配置API
  *
  * v3.6 变更:
  *   - 前端重构：每模型独立「使用此模型」按钮，一步切换
@@ -1017,3 +1022,574 @@ server.on('error', (err) => {
     process.exit(1);
   }
 });
+
+
+// ================================================================
+//   Admin Server (端口 8788) — Web 管理面板后端 API
+//   包含: 模型管理 / 日志流(SSE) / 统计 / 历史记录 / Codex配置
+// ================================================================
+
+const fs = require('fs');
+const path = require('path');
+
+const ADMIN_PORT = 8787; // 注意: admin 与代理共享同一个 HTTP server，通过路径区分
+
+// ========== Admin 内部状态 ==========
+
+let activeModel = null;           // 手动指定的模型 ID（null = 自动选择）
+let requestStats = { total: 0, success: 0, fail: 0 };
+const requestHistory = [];        // 最近请求记录（最多保留 200 条）
+const startTime = Date.now();
+
+// ========== 日志广播器（SSE） ==========
+
+const logClients = new Set();
+const origConsole = { log: console.log, error: console.error, warn: console.warn };
+
+function broadcastLog(level, message) {
+  const entry = { ts: new Date().toISOString(), level, message };
+  const data = JSON.stringify(entry);
+  for (const client of logClients) {
+    try { client.write(`data: ${data}\n\n`); } catch(e) { logClients.delete(client); }
+  }
+  // 同时调用原始 console
+  origConsole[level](message);
+}
+
+console.log = (...args) => broadcastLog('INFO', args.join(' '));
+console.error = (...args) => broadcastLog('ERROR', args.join(' '));
+console.warn = (...args) => broadcastLog('WARN', args.join(' '));
+
+// ========== Admin API 路由 ==========
+
+/** 处理所有 Admin API 请求 */
+async function handleAdminApi(req, res, urlPath) {
+  const method = req.method;
+
+  // ---- SSE 日志流 ----
+  if (urlPath === '/api/logs' && method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.write(': connected\n\n');
+    logClients.add(res);
+    req.on('close', () => logClients.delete(res));
+    return;
+  }
+
+  // ---- 统计信息 ----
+  if (urlPath === '/api/stats' && method === 'GET') {
+    const enabledCount = [...modelHealth.values()].filter(h => h.consecutiveFailures === 0 || h.totalSuccesses > 0).length;
+    return sendJson(res, 200, {
+      uptime: Math.floor((Date.now() - startTime) / 1000),
+      proxy: { port: CONFIG.port, upstream: CONFIG.upstream.host, modelsEnabled: enabledCount },
+      models: { total: MODEL_POOL.length, enabled: enabledCount },
+      requests: requestStats,
+      successRate: requestStats.total > 0 ? Math.round(requestStats.success / requestStats.total * 100) : 0,
+      activeModel: activeModel,
+    });
+  }
+
+  // ---- 模型列表（含健康状态） ----
+  if (urlPath === '/api/models' && method === 'GET') {
+    const models = MODEL_POOL.map(m => {
+      const h = modelHealth.get(m.id);
+      const now = Date.now();
+      const coolingRemaining = (h.lastErrorTime + CONFIG.failover.cooldownMs) - now;
+      return {
+        ...m,
+        health: {
+          status: coolingRemaining > 0 && h.consecutiveFailures > 0 ? 'cooling' : (h.consecutiveFailures > 0 ? 'error' : 'ok'),
+          totalSuccesses: h.totalSuccesses || 0,
+          totalFailures: h.totalFailures || 0,
+          lastError: h.lastError || null,
+          cooldownRemaining: Math.max(0, coolingRemaining),
+        },
+        isActive: activeModel === m.id,
+        enabled: !(h.consecutiveFailures > 3), // 简单启用/禁用判断
+      };
+    });
+    return sendJson(res, 200, { models });
+  }
+
+  // ---- 新增模型 ----
+  if (urlPath === '/api/models' && method === 'POST') {
+    const body = await parseBody(req);
+    if (!body.id || !body.name) return sendJson(res, 400, { error: 'id 和 name 必填' });
+
+    // 检查是否已存在
+    if (MODEL_POOL.find(m => m.id === body.id)) {
+      return sendJson(res, 409, { error: '模型 ID 已存在: ' + body.id });
+    }
+
+    const newModel = {
+      id: body.id, name: body.name, desc: body.desc || '',
+      priority: body.priority || MODEL_POOL.length + 1,
+    };
+    MODEL_POOL.push(newModel);
+    initModelHealth(); // 重建健康状态
+    console.log(`[ADMIN] ✅ 模型已添加: ${newModel.name} (${newModel.id})`);
+    return sendJson(res, 201, { message: '模型已添加', model: newModel });
+  }
+
+  // ---- 删除模型 ----
+  if (urlPath.startsWith('/api/models/') && method === 'DELETE') {
+    const modelId = decodeURIComponent(urlPath.replace('/api/models/', '').replace(/\/toggle|\/priority.*$/, ''));
+    const idx = MODEL_POOL.findIndex(m => m.id === modelId);
+    if (idx === -1) return sendJson(res, 404, { error: '模型不存在' });
+    const removed = MODEL_POOL.splice(idx, 1)[0];
+    if (activeModel === modelId) activeModel = null;
+    initModelHealth();
+    console.log(`[ADMIN] 🗑 模型已删除: ${removed.name} (${removed.id})`);
+    return sendJson(res, 200, { message: '模型已删除', id: modelId });
+  }
+
+  // ---- 切换启用/禁用 ----
+  if (urlPath.endsWith('/toggle') && method === 'PUT') {
+    const modelId = decodeURIComponent(urlPath.replace('/api/models/', '').replace('/toggle', ''));
+    const h = modelHealth.get(modelId);
+    if (!h) return sendJson(res, 404, { error: '模型不存在' });
+    // 重置失败计数来"启用"，或设置一个大数字来"禁用"
+    if (h.consecutiveFailures > 3) {
+      h.consecutiveFailures = 0; h.lastError = null;
+    } else {
+      h.consecutiveFailures = 99;
+    }
+    return sendJson(res, 200, { enabled: h.consecutiveFailures < 4, id: modelId });
+  }
+
+  // ---- 修改优先级 ----
+  if (urlPath.endsWith('/priority') && method === 'PUT') {
+    const modelId = decodeURIComponent(urlPath.replace('/api/models/', '').replace('/priority', ''));
+    const body = await parseBody(req);
+    const m = MODEL_POOL.find(m => m.id === modelId);
+    if (!m) return sendJson(res, 404, { error: '模型不存在' });
+    m.priority = body.priority || m.priority;
+    return sendJson(res, 200, { message: '优先级已更新', id: modelId, priority: m.priority });
+  }
+
+  // ---- 获取/设置活跃模型 ----
+  if (urlPath === '/api/active-model') {
+    if (method === 'GET') {
+      if (activeModel) {
+        const m = MODEL_POOL.find(m => m.id === activeModel);
+        return sendJson(res, 200, { mode: 'manual', id: activeModel, name: m?.name || activeModel, message: `当前手动指定模型: ${m?.name || activeModel}` });
+      }
+      return sendJson(res, 200, { mode: 'auto', id: null, name: null, message: '自动选择模式（按优先级+健康度）' });
+    }
+
+    if (method === 'PUT') {
+      const body = await parseBody(req);
+      activeModel = body.id || null;
+
+      // 记录到请求历史中
+      addHistory('config', activeModel || '(auto)', 'switch', 'success', 0, `切换模式 → ${activeModel ? '手动: ' + activeModel : '自动选择'}`);
+
+      if (activeModel) {
+        const m = MODEL_POOL.find(m => m.id === activeModel);
+        console.log(`[ADMIN] 🎯 活跃模型已设置为: ${m?.name || activeModel} (${activeModel})`);
+        return sendJson(res, 200, { mode: 'manual', id: activeModel, name: m?.name || activeModel, message: `✅ 已切换到: ${m?.name || activeModel}` });
+      } else {
+        console.log(`[ADMIN] ↺ 已切回自动选择模式`);
+        return sendJson(res, 200, { mode: 'auto', id: null, name: null, message: '↺ 已切回自动选择模式' });
+      }
+    }
+  }
+
+  // ---- 请求历史 ----
+  if (urlPath === '/api/history') {
+    if (method === 'GET') {
+      const limit = parseInt(new URL(req.url, 'http://localhost').searchParams.get('limit')) || 50;
+      return sendJson(res, 200, { records: requestHistory.slice(-limit), total: requestHistory.length });
+    }
+    if (method === 'DELETE') {
+      requestHistory.length = 0;
+      return sendJson(res, 200, { message: '历史已清空' });
+    }
+  }
+
+  // ==============================
+  //  v3.7 新增: Codex config.toml 管理 API
+  // ==============================
+
+  if (urlPath === '/api/codex-config') {
+    return handleCodexConfig(req, res, method);
+  }
+
+  sendJson(res, 404, { error: 'API not found: ' + urlPath });
+}
+
+
+// ==================== Codex Config TOML 管理核心逻辑 ====================
+
+/**
+ * 解析简单的 TOML 格式（支持 Codex config.toml 所需的子集）
+ * 支持的语法: [section], key = value, 字符串/布尔值
+ */
+function parseToml(text) {
+  const result = {};
+  let currentSection = null;
+
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    // [section]
+    const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1];
+      if (!result[currentSection]) result[currentSection] = {};
+      continue;
+    }
+
+    // key = value
+    const kvMatch = trimmed.match(/^(\w[\w.\-]*)\s*=\s*(.+)$/);
+    if (kvMatch && currentSection) {
+      let val = kvMatch[2].trim();
+      // 移除字符串引号
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      result[currentSection][kvMatch[1]] = val;
+    }
+  }
+  return result;
+}
+
+/** 将对象序列化为简单 TOML 格式 */
+function serializeToml(obj) {
+  const lines = [];
+  for (const [section, keys] of Object.entries(obj)) {
+    lines.push(`[${section}]`);
+    for (const [key, val] of Object.entries(keys)) {
+      if (typeof val === 'boolean') {
+        lines.push(`${key} = ${val}`);
+      } else if (typeof val === 'number') {
+        lines.push(`${key} = ${val}`);
+      } else {
+        // 字符串：转义并加引号
+        const escaped = String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        lines.push(`${key} = "${escaped}"`);
+      }
+    }
+    lines.push('');
+  }
+  return lines.join('\n') + '\n';
+}
+
+/** 获取 Codex 配置文件路径 */
+function getCodexConfigPath() {
+  return path.join(process.env.USERPROFILE || process.env.HOME || '', '.codex', 'config.toml');
+}
+
+/** 读取并解析 Codex 当前配置 */
+function readCodexConfig() {
+  const cfgPath = getCodexConfigPath();
+  try {
+    if (!fs.existsSync(cfgPath)) {
+      return { exists: false, path: cfgPath, parsed: null, raw: null };
+    }
+    const raw = fs.readFileSync(cfgPath, 'utf-8');
+    return { exists: true, path: cfgPath, parsed: parseToml(raw), raw };
+  } catch (e) {
+    return { exists: false, path: cfgPath, parsed: null, raw: null, error: e.message };
+  }
+}
+
+/** 生成正确的 Codex provider 配置（基于当前代理状态） */
+function generateProviderConfig(modelOverride) {
+  const modelToUse = modelOverride || activeModel || MODEL_POOL[0]?.id || 'Qwen/Qwen2.5-7B-Instruct';
+  return {
+    'model_providers.siliconflow': {
+      name: 'siliconflow',
+      base_url: `http://${CONFIG.host}:${CONFIG.port}/v1`,
+      api_key: 'codex-sf-proxy',
+      model: modelToUse,
+      wire_api: 'responses',
+    },
+  };
+}
+
+/**
+ * 合并用户原有配置与新生成的 provider 配置
+ * 保留用户的其他设置（desktop, windows, plugins 等），只更新 provider 部分
+ */
+function mergeConfig(originalParsed, newProviderConfig) {
+  const merged = {};
+
+  // 复制原始配置的所有 section
+  for (const [section, keys] of Object.entries(originalParsed || {})) {
+    // 跳过旧的 provider 配置（我们会用新的覆盖）
+    if (section.startsWith('model_providers.')) continue;
+    merged[section] = { ...keys };
+  }
+
+  // 写入新的 provider 配置
+  for (const [section, keys] of Object.entries(newProviderConfig)) {
+    merged[section] = { ...keys };
+  }
+
+  return merged;
+}
+
+/** 处理 /api/codex-config 请求 */
+async function handleCodexConfig(req, res, method) {
+  const codexCfg = readCodexConfig();
+
+  // GET: 返回当前 Codex 配置状态及校验结果
+  if (method === 'GET') {
+    // 校验配置是否正确
+    const checks = validateCodexConfig(codexCfg);
+
+    return sendJson(res, 200, {
+      exists: codexCfg.exists,
+      path: codexCfg.path,
+      hasError: !!codexCfg.error,
+      error: codexCfg.error || null,
+      currentConfig: codexCfg.parsed || null,
+      checks: checks,
+      recommendedConfig: generateProviderConfig(),
+      currentActiveModel: activeModel,
+      proxyInfo: {
+        host: CONFIG.host,
+        port: CONFIG.port,
+        baseUrl: `http://${CONFIG.host}:${CONFIG.port}/v1`,
+      },
+    });
+  }
+
+  // POST: 写入正确的配置
+  if (method === 'POST') {
+    const body = await parseBody(req);
+    const useActiveModel = body.useActiveModel !== false; // 默认同步当前活跃模型
+
+    try {
+      // 生成配置：使用当前活跃模型或用户指定模型
+      const targetModel = body.model || (useActiveModel ? activeModel : null) || MODEL_POOL[0]?.id;
+      const newProviderConfig = generateProviderConfig(targetModel);
+
+      // 合并已有配置
+      const merged = mergeConfig(codexCfg.parsed, newProviderConfig);
+      const tomlContent = serializeToml(merged);
+
+      // 确保目录存在
+      const dir = path.dirname(codexCfg.path);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      // 写入（原子性：先写临时文件再重命名）
+      const tmpPath = codexCfg.path + '.tmp';
+      fs.writeFileSync(tmpPath, tomlContent, 'utf-8');
+      fs.renameSync(tmpPath, codexCfg.path);
+
+      const modelName = MODEL_POOL.find(m => m.id === targetModel)?.name || targetModel;
+      console.log(`[CODEX-CONFIG] ✅ config.toml 已更新! base_url=http://${CONFIG.host}:${CONFIG.port}/v1, model=${targetModel} (${modelName})`);
+
+      // 重新读取验证
+      const verify = readCodexConfig();
+      const verifyChecks = validateCodexConfig(verify);
+
+      return sendJson(res, 200, {
+        success: true,
+        message: `✅ Codex 配置已写入!\n地址: http://${CONFIG.host}:${CONFIG.port}/v1\n模型: ${targetModel} (${modelName})\nwire_api: responses`,
+        writtenPath: codexCfg.path,
+        modelUsed: targetModel,
+        modelName: modelName,
+        configPreview: tomlContent,
+        checks: verifyChecks,
+      });
+    } catch (e) {
+      console.error(`[CODEX-CONFIG] ❌ 写入失败: ${e.message}`);
+      return sendJson(res, 500, { success: false, error: e.message, message: '写入配置失败: ' + e.message });
+    }
+  }
+
+  sendJson(res, 405, { error: 'Method not allowed' });
+}
+
+/**
+ * 校验 Codex 配置是否正确
+ * 返回各项检查结果
+ */
+function validateCodexConfig(codexCfg) {
+  const checks = {
+    fileExists: { ok: codexCfg.exists, expected: true, actual: codexCfg.exists, detail: codexCfg.exists ? '文件存在' : '⚠️ config.toml 不存在' },
+    hasProvider: false,
+    correctBaseUrl: false,
+    correctWireApi: false,
+    hasModel: false,
+    overall: false,
+  };
+
+  if (!codexCfg.parsed) {
+    checks.overall = false;
+    checks.detail = '无法解析配置文件';
+    return checks;
+  }
+
+  // 查找任何 model_providers.* section
+  const providerSections = Object.keys(codexCfg.parsed).filter(k => k.startsWith('model_providers.'));
+  const providerKey = providerSections[0] || null;
+  const provider = providerKey ? codexCfg.parsed[providerKey] : null;
+
+  checks.hasProvider = {
+    ok: providerSections.length > 0,
+    expected: true,
+    actual: !!provider,
+    detail: provider ? `找到 provider: ${providerKey}` : '❌ 未找到 model_providers 配置',
+  };
+
+  if (!provider) {
+    checks.overall = false;
+    checks.detail = '缺少 Provider 配置';
+    return checks;
+  }
+
+  const expectedBaseUrl = `http://${CONFIG.host}:${CONFIG.port}/v1`;
+  checks.correctBaseUrl = {
+    ok: provider.base_url === expectedBaseUrl,
+    expected: expectedBaseUrl,
+    actual: provider.base_url || '(未设置)',
+    detail: provider.base_url === expectedBaseUrl ? 'base_url 正确指向本代理' : `❌ base_url 应为 ${expectedBaseUrl}, 实际为 ${provider.base_url}`,
+  };
+
+  checks.correctWireApi = {
+    ok: provider.wire_api === 'responses',
+    expected: 'responses',
+    actual: provider.wire_api || '(未设置)',
+    detail: provider.wire_api === 'responses' ? 'wire_api 正确' : '❌ wire_api 应为 "responses"',
+  };
+
+  checks.hasModel = {
+    ok: !!provider.model,
+    expected: 'any valid model id',
+    actual: provider.model || '(未设置)',
+    detail: provider.model ? `模型: ${provider.model}` : '❌ 未设置模型',
+  };
+
+  // 总体判断
+  checks.overall = checks.hasProvider.ok && checks.correctBaseUrl.ok && checks.correctWireApi.ok && checks.hasModel.ok;
+  checks.detail = checks.overall ? '✅ 配置正确！可以启动 Codex' : '⚠️ 配置不完整，需要修复';
+
+  return checks;
+}
+
+
+// ==================== 辅助函数 ====================
+
+/** 添加请求历史记录 */
+function addHistory(model, usedModel, type, status, tokensOrChars, errorDetail) {
+  requestHistory.push({
+    ts: new Date().toISOString(),
+    model: usedModel || model,
+    stream: type === 'stream',
+    status: status,
+    tokens: typeof tokensOrChars === 'number' && type !== 'stream' ? tokensOrChars : undefined,
+    chars: type === 'stream' ? tokensOrChars : undefined,
+    error: errorDetail || null,
+  });
+  if (requestHistory.length > 200) requestHistory.shift();
+}
+
+// 在 handleRequest 中注入统计和历史记录
+const _origHandleRequest = handleRequest;
+handleRequest = async function(req, res) {
+  const startTs = Date.now();
+  const url = req.url;
+
+  // 拦截 /api/ 路径 -> Admin API
+  if (url.startsWith('/api/')) {
+    return handleAdminApi(req, res, url.split('?')[0]);
+  }
+
+  // 静态文件服务（admin 面板 HTML）
+  if (url === '/' || url === '/index.html') {
+    const adminHtmlPath = path.join(__dirname, 'admin', 'index.html');
+    try {
+      const html = fs.readFileSync(adminHtmlPath, 'utf-8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      res.end(html);
+      return;
+    } catch (e) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Admin panel not found. Place admin/index.html in the same directory.');
+      return;
+    }
+  }
+
+  // 调用原始处理逻辑
+  await _origHandleRequest(req, res);
+};
+
+
+// ========== 启动 Admin Server 信息 ==========
+
+// 补充启动信息中的 Admin Server 部分
+const _origServerListen = server.listen;
+// 我们已经用了 server.listen 了，所以在回调里补充 admin 信息即可
+
+// 覆盖 listen 回调以包含 admin 信息
+const originalOnListening = server.listeners('listening')[0];
+if (originalOnListening) {
+  server.removeListener('listening', originalOnListening);
+}
+
+server.on('listening', () => {
+  // Admin Server 信息（和主代理共享同一端口，不同路径）
+  setTimeout(() => {
+    console.log('');
+    console.log('╔══════════════════════════════════════════════════╗');
+    console.log('║   Admin Panel: http://127.0.0.1:' + CONFIG.port + '/         ║');
+    console.log('║   API Docs:    http://127.0.0.1:' + CONFIG.port + '/api/stats ║');
+    console.log('╚══════════════════════════════════════════════════╝');
+    console.log('');
+
+    // 启动时检测 Codex 配置状态
+    checkAndShowCodexConfigStatus();
+  }, 100); // 延迟一点确保主启动信息先打印
+});
+
+/** 启动时检测 Codex 配置状态并打印提示 */
+function checkAndShowCodexConfigStatus() {
+  const codexCfg = readCodexConfig();
+  const checks = validateCodexConfig(codexCfg);
+
+  console.log('╔═══════════════════════════════════════════════════════════════╗');
+  console.log('║              Codex CLI 配置检测 (config.toml)                 ║');
+  console.log('╠═══════════════════════════════════════════════════════════════╣');
+
+  if (!codexCfg.exists) {
+    console.log('║  ⚠️  未找到 config.toml 文件                                      ║');
+    console.log('║  路径: ' + getCodexConfigPath());
+    console.log('║                                                                 ║');
+    console.log('║  👉 打开管理面板点击「一键配置」即可自动生成                       ║');
+  } else if (!checks.overall) {
+    console.log('║  ⚠️  配置存在但不正确，需要修复:                                   ║');
+    console.log('║  ────────────────────────────────────────                       ║');
+    if (checks.hasProvider && !checks.hasProvider.ok)
+      console.log('║  ❌ ' + (checks.hasProvider.detail || '缺少 Provider'));
+    if (checks.correctBaseUrl && !checks.correctBaseUrl.ok)
+      console.log('║  ❌ ' + (checks.correctBaseUrl.detail || 'base_url 错误'));
+    if (checks.correctWireApi && !checks.correctWireApi.ok)
+      console.log('║  ❌ ' + (checks.correctWireApi.detail || 'wire_api 错误'));
+    if (checks.hasModel && !checks.hasModel.ok)
+      console.log('║  ❌ ' + (checks.hasModel.detail || '缺少模型'));
+    console.log('║                                                                 ║');
+    console.log('║  👉 打开管理面板点击「一键配置」即可自动修复                       ║');
+  } else {
+    console.log('║  ✅ Codex 配置正确! 可以直接启动 Codex                           ║');
+    const prov = Object.values(codexCfg.parsed).find((v, k) => String(k).startsWith('model_providers.'));
+    if (prov) {
+      console.log('║     base_url: ' + prov.base_url);
+      console.log('║     model:    ' + prov.model);
+      console.log('║     wire_api: ' + prov.wire_api);
+    }
+  }
+
+  console.log('╚═══════════════════════════════════════════════════════════════╝');
+  console.log('');
+}
