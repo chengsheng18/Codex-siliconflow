@@ -1,9 +1,15 @@
 /**
  * ============================================
- *  Codex <-> SiliconFlow 协议转换代理 v3.7
+ *  Codex <-> SiliconFlow 协议转换代理 v3.8
  *  Responses API <-> Chat Completions
- *  支持多模型池 + 自动故障切换 + Web 管理面板 + Codex 配置管理
+ *  支持多模型池 + 自动故障切换 + Web 管理面板 + Codex 配置管理 + 客户端取消处理
  * ============================================
+ *
+ * v3.8 变更:
+ *   - 新增客户端取消请求中断处理（流式 + 非流式）
+ *   - 流式：监听 req.close/res.close → upReq.destroy() 中断上游
+ *   - 非流式：upstreamRequest 支持 originalReq 参数，取消时返回 499
+ *   - 取消时记录统计信息（cancelledRequests 计数器）
  *
  * v3.7 变更:
  *   - 新增 Codex config.toml 一键配置功能（自动检测/写入/校验）
@@ -310,9 +316,32 @@ function parseBody(req) {
 /**
  * 向上游发送 HTTPS POST 请求（非流式）
  * 支持：自动选择模型 → 失败自动切下一个模型 → 最多尝试整个池
+ * 支持：客户端取消时中断上游请求（传入 originalReq）
  */
-function upstreamRequest(payload, triedModels = [], depth = 0) {
+function upstreamRequest(payload, triedModels = [], depth = 0, originalReq = null) {
   return new Promise((resolve, reject) => {
+    // 客户端取消标志
+    let clientAborted = false;
+    let upReq = null;
+
+    const onClientAbort = () => {
+      if (clientAborted) return;
+      clientAborted = true;
+      if (upReq) { try { upReq.destroy(); } catch(e) {} }
+      console.log(`[PROXY] ⚡ Client cancelled non-stream request`);
+      stats.totalRequests++;
+      stats.cancelledRequests = (stats.cancelledRequests || 0) + 1;
+      resolve({
+        status: 499,
+        data: { error: { message: 'Client closed request', type: 'cancelled' } },
+      });
+    };
+
+    // 监听客户端断开
+    if (originalReq) {
+      originalReq.on('close', onClientAbort);
+    }
+
     const modelId = getNextModel(triedModels);
 
     if (!modelId || depth >= CONFIG.failover.maxRetries) {
@@ -354,9 +383,15 @@ function upstreamRequest(payload, triedModels = [], depth = 0) {
     }
 
     const req = https.request(options, (upRes) => {
+      // 保存引用供取消时 destroy 使用
+      upReq = req;
+
       const chunks = [];
       upRes.on('data', c => chunks.push(c));
       upRes.on('end', () => {
+        // 客户端已断开，不再处理
+        if (clientAborted) return;
+
         const body = Buffer.concat(chunks).toString();
         let parsed;
         try { parsed = JSON.parse(body); } catch (e) { parsed = body; }
@@ -457,6 +492,27 @@ function handleStreamWithFailover(originalReq, originalRes, payload, originalBod
   };
 
   const upReq = https.request(options, (upRes) => {
+    let clientAborted = false;  // 标记客户端是否已断开
+
+    // ========== 客户端取消处理（Codex 中途按 Ctrl+C / 取消任务）==========
+    // Codex 取消任务时会关闭 HTTP 连接，触发 originalReq 的 'close' 事件
+    // 此时必须立即销毁上游请求，避免继续消耗 token
+    const onClientAbort = () => {
+      if (clientAborted) return;
+      clientAborted = true;
+
+      // 立即销毁上游连接（停止接收数据）
+      try { upReq.destroy(); } catch (e) { /* already destroyed */ }
+
+      console.log(`[PROXY] ⚡ Client cancelled request (model: ${modelName})`);
+      addHistory(payload.model || modelId, modelId, 'stream', 'cancelled', fullText?.length || 0, 'Client aborted');
+      stats.totalRequests++;
+      stats.cancelledRequests = (stats.cancelledRequests || 0) + 1;
+    };
+
+    originalReq.on('close', onClientAbort);
+    originalRes.on('close', onClientAbort);
+
     // 检查上游是否返回了错误状态码（还没开始发数据）
     if (upRes.statusCode >= 400) {
       console.error(`[PROXY] ✗ Stream model ${modelName} returned HTTP ${upRes.statusCode}`);
@@ -530,6 +586,9 @@ function handleStreamWithFailover(originalReq, originalRes, payload, originalBod
     })}\n\n`);
 
     upRes.on('data', (chunk) => {
+      // 客户端已断开，丢弃数据（上游连接已在 onClientAbort 中销毁）
+      if (clientAborted) return;
+
       buffer += chunk.toString();
       const lines = buffer.split('\n');
       buffer = lines.pop();
@@ -541,6 +600,9 @@ function handleStreamWithFailover(originalReq, originalRes, payload, originalBod
         const data = trimmed.slice(5).trim();
 
         if (data === '[DONE]') {
+          // 客户端已断开，不再写数据
+          if (clientAborted) return;
+
           // === 阶段 6-9: output_text.done / content_part.done / output_item.done / response.completed ===
           // v3.4: 构建带完整字段的输出项结构 (FIX 3 + FIX 4)
           const msgItemId = 'msg_' + respId;
@@ -619,6 +681,9 @@ function handleStreamWithFailover(originalReq, originalRes, payload, originalBod
           const parsed = JSON.parse(data);
           const delta = parsed.choices?.[0]?.delta;
           if (delta?.content) {
+            // 客户端已断开，停止处理
+            if (clientAborted) return;
+
             fullText += delta.content;
 
             // === 阶段 3: 首次收到内容时发送 output_item.added (仅一次) ===
@@ -767,8 +832,15 @@ async function handleRequest(req, res) {
     if (chatPayload.stream) {
       handleStreamWithFailover(req, res, chatPayload, body);
     } else {
-      // 非流式：用带故障切换的上游请求
-      const result = await upstreamRequest(chatPayload);
+      // 非流式：用带故障切换的上游请求（传入 req 支持客户端取消检测）
+      const result = await upstreamRequest(chatPayload, [], 0, req);
+
+      if (result.status === 499) {
+        // 客户端取消，直接关闭响应
+        console.log(`[PROXY] ⚡ Non-stream request cancelled by client`);
+        try { res.end(); } catch(e) {}
+        return;
+      }
 
       if (result.status >= 400) {
         console.log(`[PROXY] ✗ All models failed:`, JSON.stringify(result.data)?.slice(0, 300));
@@ -959,10 +1031,11 @@ server.listen(CONFIG.port, CONFIG.host, async () => {
   await testModelConnectivity();
 
   console.log('╔══════════════════════════════════════════════════╗');
-  console.log('║   SiliconFlow Proxy for Codex CLI  v3.7         ║');
+  console.log('║   SiliconFlow Proxy for Codex CLI  v3.8         ║');
   console.log('║   Responses <-> Chat Completions               ║');
   console.log('║   Multi-Model Pool + Auto Failover             ║');
   console.log('║   + Web Admin Panel (http://127.0.0.1:8787/)║');
+  console.log('║   + Client Cancel Support (stream+non-stream)    ║');
   console.log('╠══════════════════════════════════════════════════╣');
   console.log(`║   Listen : http://${CONFIG.host}:${CONFIG.port}/v1`);
   console.log(`║   Target : https://${CONFIG.upstream.host}${CONFIG.upstream.path}`);
@@ -1305,6 +1378,7 @@ function readCodexConfig() {
 function generateProviderConfig(modelOverride) {
   const modelToUse = modelOverride || activeModel || MODEL_POOL[0]?.id || 'Qwen/Qwen2.5-7B-Instruct';
   return {
+    provider: 'siliconflow',  // 关键：告诉 Codex CLI 使用哪个 provider（否则默认走 OpenAI）
     'model_providers.siliconflow': {
       name: 'siliconflow',
       base_url: `http://${CONFIG.host}:${CONFIG.port}/v1`,
@@ -1420,6 +1494,7 @@ async function handleCodexConfig(req, res, method) {
 function validateCodexConfig(codexCfg) {
   const checks = {
     fileExists: { ok: codexCfg.exists, expected: true, actual: codexCfg.exists, detail: codexCfg.exists ? '文件存在' : '⚠️ config.toml 不存在' },
+    hasDefaultProvider: false,   // 顶层 provider 字段（关键！没有则 Codex 默认走 OpenAI）
     hasProvider: false,
     correctBaseUrl: false,
     correctWireApi: false,
@@ -1432,6 +1507,18 @@ function validateCodexConfig(codexCfg) {
     checks.detail = '无法解析配置文件';
     return checks;
   }
+
+  // 检查顶层 provider 字段（决定 Codex 使用哪个 provider）
+  const topLevelProvider = (codexCfg.parsed.provider || '').trim().toLowerCase();
+  const expectedProviderNames = ['siliconflow', 'sf', 'newapi'];
+  checks.hasDefaultProvider = {
+    ok: expectedProviderNames.includes(topLevelProvider),
+    expected: 'siliconflow',
+    actual: topLevelProvider || '(未设置)',
+    detail: expectedProviderNames.includes(topLevelProvider)
+      ? `provider = "${topLevelProvider}" ✅`
+      : '❌ 缺少顶层 provider 字段（Codex 会默认走 OpenAI，忽略你的 siliconflow 配置）',
+  };
 
   // 查找任何 model_providers.* section
   const providerSections = Object.keys(codexCfg.parsed).filter(k => k.startsWith('model_providers.'));
@@ -1473,8 +1560,8 @@ function validateCodexConfig(codexCfg) {
     detail: provider.model ? `模型: ${provider.model}` : '❌ 未设置模型',
   };
 
-  // 总体判断
-  checks.overall = checks.hasProvider.ok && checks.correctBaseUrl.ok && checks.correctWireApi.ok && checks.hasModel.ok;
+  // 总体判断（必须包含 provider 顶层字段，否则 Codex 默认走 OpenAI）
+  checks.overall = checks.hasDefaultProvider.ok && checks.hasProvider.ok && checks.correctBaseUrl.ok && checks.correctWireApi.ok && checks.hasModel.ok;
   checks.detail = checks.overall ? '✅ 配置正确！可以启动 Codex' : '⚠️ 配置不完整，需要修复';
 
   return checks;

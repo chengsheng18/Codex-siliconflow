@@ -1,13 +1,14 @@
 @echo off
-title Nim-Proxy for Codex v3.7
+title Nim-Proxy for Codex v3.8
 color 0A
 chcp 65001 >nul 2>&1
 
 echo.
 echo ============================================
-echo   Codex x SiliconFlow Protocol Converter v3.7
+echo   Codex x SiliconFlow Protocol Converter v3.8
 echo   Responses API ---(proxy)---> Chat Completions
 echo   + Web Admin Panel (http://127.0.0.1:8787/)
+echo   + Client Cancel Support (stream + non-stream)
 echo ============================================
 echo.
 
@@ -26,17 +27,17 @@ echo.
 echo [*] Checking port 8787 (proxy)...
 call :KILL_PORT 8787
 
-:: Step3: Check and free port 8788 (admin panel)
-echo [*] Checking port 8788 (admin panel)...
-call :KILL_PORT 8788
+:: Step3: Check and free port 8787 (admin panel shares proxy port)
+echo [*] Checking port 8787 (admin + proxy)...
+call :KILL_PORT 8787
 
 :: Step4: Auto-open admin panel in browser (3s after proxy starts)
-start "" /min timeout /t 3 /nobreak >nul && start http://127.0.0.1:8788/
+start "" /min timeout /t 3 /nobreak >nul && start http://127.0.0.1:8787/
 
 :: Step5: Start proxy
 echo.
 echo --------------------------------------------
-echo   Starting Nim-Proxy v3.7
+echo   Starting Nim-Proxy v3.8
 echo --------------------------------------------
 echo     Proxy  : http://127.0.0.1:8787/v1
 echo     Admin  : http://127.0.0.1:8787/

@@ -46,9 +46,9 @@ echo [*] Step 2/4: Checking port 8787 (proxy)...
 call :KILL_PORT 8787
 echo.
 
-:: ========== Step 3: 释放端口 8788（管理面板） ==========
-echo [*] Step 3/4: Checking port 8788 (admin panel)...
-call :KILL_PORT 8788
+:: ========== Step 3: 释放端口 8787（代理 + 管理面板共用） ==========
+echo [*] Step 3/4: Checking port 8787 (proxy + admin)...
+call :KILL_PORT 8787
 echo.
 
 :: ========== Step 4: 启动代理 ==========
@@ -82,11 +82,11 @@ echo.
 echo [OK] Proxy started!
 echo.
 echo     Proxy  : http://127.0.0.1:8787/v1
-echo     Admin   : http://127.0.0.1:8788/
+echo     Admin   : http://127.0.0.1:8787/  (same port as proxy)
 echo.
 
 :: 打开管理面板
-start http://127.0.0.1:8788/
+start http://127.0.0.1:8787/
 
 echo [*] Admin panel opened in browser.
 echo [*] The proxy is running in a minimized window.
