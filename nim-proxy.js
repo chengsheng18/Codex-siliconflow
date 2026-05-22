@@ -952,16 +952,17 @@ function printTestResults(results) {
 
 // ========== 启动服务器 ==========
 
-const server = http.createServer(handleRequest);
+const server = http.createServer((req, res) => handleRequest(req, res));
 
 server.listen(CONFIG.port, CONFIG.host, async () => {
   // 先做连通性测试，测试完再打印启动面板
   await testModelConnectivity();
 
   console.log('╔══════════════════════════════════════════════════╗');
-  console.log('║   SiliconFlow Proxy for Codex CLI  v3.4         ║');
+  console.log('║   SiliconFlow Proxy for Codex CLI  v3.7         ║');
   console.log('║   Responses <-> Chat Completions               ║');
   console.log('║   Multi-Model Pool + Auto Failover             ║');
+  console.log('║   + Web Admin Panel (http://127.0.0.1:8787/)║');
   console.log('╠══════════════════════════════════════════════════╣');
   console.log(`║   Listen : http://${CONFIG.host}:${CONFIG.port}/v1`);
   console.log(`║   Target : https://${CONFIG.upstream.host}${CONFIG.upstream.path}`);
@@ -1032,7 +1033,7 @@ server.on('error', (err) => {
 const fs = require('fs');
 const path = require('path');
 
-const ADMIN_PORT = 8787; // 注意: admin 与代理共享同一个 HTTP server，通过路径区分
+const ADMIN_PORT = 8788; // 管理面板独立端口（代理 8787 / 管理 8788）
 
 // ========== Admin 内部状态 ==========
 
@@ -1045,6 +1046,7 @@ const startTime = Date.now();
 
 const logClients = new Set();
 const origConsole = { log: console.log, error: console.error, warn: console.warn };
+const LEVEL_MAP = { INFO: 'log', ERROR: 'error', WARN: 'warn' };
 
 function broadcastLog(level, message) {
   const entry = { ts: new Date().toISOString(), level, message };
@@ -1052,8 +1054,8 @@ function broadcastLog(level, message) {
   for (const client of logClients) {
     try { client.write(`data: ${data}\n\n`); } catch(e) { logClients.delete(client); }
   }
-  // 同时调用原始 console
-  origConsole[level](message);
+  const fn = origConsole[LEVEL_MAP[level]] || origConsole.log;
+  fn(message);
 }
 
 console.log = (...args) => broadcastLog('INFO', args.join(' '));
